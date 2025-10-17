@@ -1,0 +1,27 @@
+name: Daily Lumen Monitor
+
+on:
+  schedule:
+    - cron: '10 0 * * *' # 每天 UTC 00:10 执行
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 python-dateutil
+      - name: Run Lumen Monitor
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_SERVER: smtp.exmail.qq.com
+          SMTP_PORT: 465
+          EMAIL_TO: yangyichen@hupogames.com
+          EMAIL_SUBJECT: 新增 Google Play DMCA 通告通知
+        run: python lumen_monitor_email_secure.py
