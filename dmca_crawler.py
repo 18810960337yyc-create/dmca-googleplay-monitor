@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import json
 from datetime import date
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -13,11 +14,12 @@ START_ID = 28600000
 END_ID = START_ID + 1000
 KEYWORDS = ["Google Play", "play.google.com"]
 
+# 从环境变量读取配置
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.hupogames.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
 
 def fetch_notices():
     results = []
@@ -51,7 +53,7 @@ def save_and_send(results):
     msg["From"] = EMAIL_SENDER
     msg["To"] = EMAIL_RECEIVER
 
-    body = MIMEText(f"共发现 {len(results)} 条与 Google Play 相关的新DMCA投诉。\n详情见附件。", "plain", "utf-8")
+    body = MIMEText(f"共发现 {len(results)} 条与 Google Play 相关的新 DMCA 投诉。\n详情见附件。", "plain", "utf-8")
     msg.attach(body)
 
     with open(filename, "rb") as f:
@@ -59,9 +61,10 @@ def save_and_send(results):
         part["Content-Disposition"] = f'attachment; filename="{filename}"'
         msg.attach(part)
 
+    # 使用 SSL 安全发送
+    context = ssl.create_default_context()
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
             server.send_message(msg)
         print(f"✅ 邮件已成功发送至 {EMAIL_RECEIVER}")
@@ -74,3 +77,5 @@ if __name__ == "__main__":
         save_and_send(data)
     else:
         print("今日未发现新的 Google Play DMCA 投诉。")
+
+
