@@ -2,80 +2,119 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import json
-from datetime import date
+from datetime import datetime
+from dateutil import parser as dateparser
 import smtplib
-import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
 
-BASE_URL = "https://lumendatabase.org/notices/"
-START_ID = 28600000
-END_ID = START_ID + 1000
-KEYWORDS = ["Google Play", "play.google.com"]
+# ====== 配置 ======
+LUMEN_SEARCH_URL = "https://lumendatabase.org/search?field=recipient&value=Google+LLC"
+KEYWORDS = ["Google Play", "Google Play Store", "Play Store", "Google LLC", "Google"]
+STATE_FILE = "seen_notices.json"
 
-# 从环境变量读取配置
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.hupogames.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
+# SMTP 配置从环境变量读取
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.exmail.qq.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+EMAIL_FROM = SMTP_USER
+EMAIL_TO = os.getenv("EMAIL_TO", "yangyichen@hupogames.com").split(",")
+EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "新增 Google Play DMCA 通告通知")
 
-def fetch_notices():
-    results = []
-    for notice_id in range(START_ID, END_ID):
-        url = f"{BASE_URL}{notice_id}"
-        try:
-            r = requests.get(url, timeout=10)
-            if r.status_code != 200:
+HEADERS = {"User-Agent": "lumen-monitor/1.0 (+https://your.domain/)"}
+
+if not SMTP_USER or not SMTP_PASSWORD:
+    raise SystemExit("错误：请在环境变量中设置 SMTP_USER 和 SMTP_PASSWORD")
+
+# ====== 工具函数 ======
+def fetch_page(url):
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    return r.text
+
+def parse_notice_page(html, url):
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.find("h1") and soup.find("h1").get_text(strip=True) or ""
+
+    def find_value(label):
+        node = soup.find(lambda tag: tag.name in ["h5","h6"] and label in tag.get_text())
+        if not node:
+            return ""
+        nxt = node.find_next_sibling()
+        return nxt.get_text(strip=True) if nxt else ""
+
+    sender = find_value("Sender") or ""
+    recipient = find_value("Recipient") or ""
+    principal = find_value("Principal") or ""
+
+    date = None
+    for part in soup.get_text(separator="\n").splitlines():
+        if "Sent on" in part or "Sent" in part:
+            try:
+                date = dateparser.parse(part, fuzzy=True).isoformat()
+                break
+            except:
                 continue
-            soup = BeautifulSoup(r.text, "html.parser")
-            text = soup.get_text(separator=' ', strip=True)
-            if any(k.lower() in text.lower() for k in KEYWORDS):
-                title = soup.find("title").text if soup.find("title") else "No title"
-                results.append({
-                    "notice_id": notice_id,
-                    "url": url,
-                    "title": title,
-                    "date": str(date.today())
-                })
-        except Exception as e:
-            print(f"Error fetching {notice_id}: {e}")
-    return results
 
-def save_and_send(results):
-    filename = f"dmca_googleplay_{date.today()}.json"
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+    desc_node = soup.find(lambda t: t.name == "div" and "Description" in t.get_text()) or None
+    description = desc_node.get_text(separator=" ", strip=True) if desc_node else ""
+
+    notice_id = url.rstrip("/").split("/")[-1] if "/notices/" in url else url
+    return {"id": notice_id, "url": url, "title": title, "sender": sender,
+            "recipient": recipient, "principal": principal, "date": date, "description": description}
+
+def load_seen():
+    if os.path.exists(STATE_FILE):
+        return json.load(open(STATE_FILE, "r", encoding="utf-8"))
+    return {}
+
+def save_seen(d):
+    json.dump(d, open(STATE_FILE, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+
+def is_relevant(notice):
+    text = " ".join([notice.get(k,"") for k in ("title","description","recipient","principal","sender")]).lower()
+    return any(k.lower() in text for k in KEYWORDS)
+
+def send_email(notices):
+    if not notices:
+        return
+    body = ""
+    for n in notices:
+        body += f"ID: {n['id']}\nTitle: {n['title']}\nSender: {n['sender']}\nPrincipal: {n['principal']}\nDate: {n['date']}\nURL: {n['url']}\nDescription: {n['description'][:300]}...\n\n"
 
     msg = MIMEMultipart()
-    msg["Subject"] = f"[DMCA Report] Google Play Notices - {date.today()}"
-    msg["From"] = EMAIL_SENDER
-    msg["To"] = EMAIL_RECEIVER
+    msg['From'] = EMAIL_FROM
+    msg['To'] = ", ".join(EMAIL_TO)
+    msg['Subject'] = EMAIL_SUBJECT
+    msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
-    body = MIMEText(f"共发现 {len(results)} 条与 Google Play 相关的新 DMCA 投诉。\n详情见附件。", "plain", "utf-8")
-    msg.attach(body)
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
 
-    with open(filename, "rb") as f:
-        part = MIMEApplication(f.read(), Name=filename)
-        part["Content-Disposition"] = f'attachment; filename="{filename}"'
-        msg.attach(part)
+# ====== 主程序 ======
+def main():
+    seen = load_seen()
+    new_notices = []
 
-    # 使用 SSL 安全发送
-    context = ssl.create_default_context()
-    try:
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.send_message(msg)
-        print(f"✅ 邮件已成功发送至 {EMAIL_RECEIVER}")
-    except Exception as e:
-        print("❌ 邮件发送失败:", e)
+    # 简单示例：单条 URL，可改为搜索结果解析
+    to_check = ["https://lumendatabase.org/notices/28600464"]
+
+    for url in to_check:
+        html = fetch_page(url)
+        notice = parse_notice_page(html, url)
+        if is_relevant(notice) and notice["id"] not in seen:
+            new_notices.append(notice)
+            seen[notice["id"]] = {"url": notice["url"], "first_seen": datetime.utcnow().isoformat(), "meta": notice}
+
+    save_seen(seen)
+    if new_notices:
+        send_email(new_notices)
+        print(f"{len(new_notices)} 条新通告已发送到 {EMAIL_TO}")
+    else:
+        print("没有新增通告")
 
 if __name__ == "__main__":
-    data = fetch_notices()
-    if data:
-        save_and_send(data)
-    else:
-        print("今日未发现新的 Google Play DMCA 投诉。")
-
+    main()
 
