@@ -2,7 +2,7 @@ name: Daily Lumen Monitor
 
 on:
   schedule:
-    - cron: '10 0 * * *' # 每天 UTC 00:10 执行
+    - cron: '10 0 * * *'  # 每天 UTC 00:10 执行
   workflow_dispatch:
 
 jobs:
@@ -25,3 +25,4 @@ jobs:
           EMAIL_TO: yangyichen@hupogames.com
           EMAIL_SUBJECT: 新增 Google Play DMCA 通告通知
         run: python lumen_monitor_email_secure.py
+
